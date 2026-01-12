@@ -154,12 +154,14 @@ class Drone:
         print(f"joint_q={self.model.joint_q}")
         print(f"joint_qd={self.model.joint_qd}")
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=24)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=224)
 
         self.state0 = self.model.state()
         self.state1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = None  # no contacts for now
+        self.contacts = self.model.collide(self.state0)
+
+        print(f"control dim {self.model.joint_dof_count}")
 
         self.viewer.set_model(self.model)
 
@@ -176,6 +178,8 @@ class Drone:
         for _ in range(self.sim_substeps):
             self.state0.clear_forces()
             self.viewer.apply_forces(self.state0)
+            self.control.joint_f.assign([0.0, 0.0, 80.0, 0.0, 0.0, 0.0])
+            self.contacts = self.model.collide(self.state0)
             self.solver.step(
                 self.state0, self.state1, self.control, self.contacts, self.sim_dt
             )

@@ -30,11 +30,24 @@ class Drone:
         self.body_boom_diam_m = 0.05
         self.body_boom_len_m = 0.20
 
+        self.motor_diam_m = 0.08
+        self.motor_height_m = 0.05
+
+        self.lnd_gear_angle_rad = wp.pi / 6
+        self.lnd_gear_length_m = 0.2
+        self.lnd_gear_diam_m = 0.02
+
         # Alta X Gen2
         if self.platform == "altaxgen2":
-            # double all values for now
-            for name in [n for n in dir(self) if n.startswith("body_")]:
-                setattr(self, name, getattr(self, name) * 2)
+            self.body_hx_m *= 2
+            self.body_hy_m *= 2
+            self.body_hz_m *= 2
+
+            self.body_boom_diam_m *= 2
+            self.body_boom_len_m *= 2
+
+            self.motor_diam_m *= 2
+            self.motor_height_m *= 2
 
         builder = newton.ModelBuilder()
 
@@ -52,21 +65,31 @@ class Drone:
             key="fuselage",
         )
 
-        boom_rot_x = wp.quat_from_axis_angle(
+        boom_rot_y = wp.quat_from_axis_angle(
             wp.vec3(0, 1, 0), wp.half_pi
         )  # rotate cylinder to point along x
+
         boom_half_length = self.body_boom_len_m / 2
+        body_diagonal_xy = math.sqrt(self.body_hx_m**2 + self.body_hy_m**2)
         boom_radius = self.body_boom_diam_m / 2
-        diagonal = math.sqrt(2) * self.body_hx_m + boom_half_length
+        diagonal_boom = body_diagonal_xy + boom_half_length - boom_radius
+        diagonal_motor = diagonal_boom + boom_half_length
+
+        lnd_gear_rot_y = wp.quat_from_axis_angle(
+            wp.vec3(0, 1, 0), -self.lnd_gear_angle_rad
+        )
 
         for id in range(4):
+            # add booms
             boom_angle = (2 * id + 1) * wp.pi / 4
             boom_rot_z = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), boom_angle)
-            boom_rot = wp.mul(boom_rot_z, boom_rot_x)
+            boom_rot = (
+                boom_rot_z * boom_rot_y
+            )  # rotate around world y-axis first, then world z-axis
 
             boom_shift = wp.vec3(
-                diagonal * math.cos(boom_angle),
-                diagonal * math.sin(boom_angle),
+                diagonal_boom * math.cos(boom_angle),
+                diagonal_boom * math.sin(boom_angle),
                 0.0,
             )
 
@@ -81,7 +104,46 @@ class Drone:
                 cfg=newton.ModelBuilder.ShapeConfig(density=self.carbon_fiber_density),
             )
 
-        # Propellers (no mass, for visualization only)
+            # add motors
+            motor_shift = wp.vec3(
+                diagonal_motor * math.cos(boom_angle),
+                diagonal_motor * math.sin(boom_angle),
+                0.0,
+            )
+
+            builder.add_shape_cylinder(
+                body,
+                xform=wp.transform(motor_shift, wp.quat_identity()),
+                radius=self.motor_diam_m / 2,
+                half_height=self.motor_height_m / 2,
+                cfg=newton.ModelBuilder.ShapeConfig(density=1000),
+            )
+
+            # add landing gear
+            lnd_gear_rot = (
+                boom_rot_z * lnd_gear_rot_y
+            )  # rotate around world y-axis first, then world z-axis
+
+            top_local = wp.vec3(0.0, 0.0, self.lnd_gear_length_m / 2)
+            top_offset = wp.quat_rotate(lnd_gear_rot, top_local)
+
+            attachment_point = wp.vec3(
+                body_diagonal_xy * math.cos(boom_angle),
+                body_diagonal_xy * math.sin(boom_angle),
+                -self.body_hz_m,
+            )
+
+            lnd_gear_shift = attachment_point - top_offset
+
+            builder.add_shape_cylinder(
+                body,
+                xform=wp.transform(lnd_gear_shift, lnd_gear_rot),
+                radius=self.lnd_gear_diam_m / 2,
+                half_height=self.lnd_gear_length_m / 2,
+                cfg=newton.ModelBuilder.ShapeConfig(density=self.carbon_fiber_density),
+            )
+
+        # TODO: propellers (no mass, for visualization only)
 
         builder.add_ground_plane()
 

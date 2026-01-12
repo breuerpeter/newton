@@ -70,6 +70,8 @@ freefly = [
     "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
+    "pymavlink>=2.4.41",    # for PX4 SITL communication
+    "rerun-sdk>=0.27.1",    # for Rerun viewer
 ]
 
 # Extra dependency needed to run examples that inference an RL policy

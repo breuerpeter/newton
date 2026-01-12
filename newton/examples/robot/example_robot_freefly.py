@@ -16,6 +16,10 @@ class Drone:
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
+        # FPS tracking
+        self.fps_update_interval = 0.5  # Update FPS display every 0.5 seconds
+        self.last_fps_time = time.time()
+        self.frame_count = 0
 
         # Drone body (rigid, symmetric in xz and xy plane)
         self.carbon_fiber_density = 1750  # [kg/m^3]
@@ -192,6 +196,16 @@ class Drone:
             self.simulate()
 
         self.sim_time += self.frame_dt
+
+        # FPS tracking
+        self.frame_count += 1
+        current_time = time.time()
+        elapsed = current_time - self.last_fps_time
+        if elapsed >= self.fps_update_interval:
+            fps = self.frame_count / elapsed
+            print(f"\rFPS: {fps:.1f}  ", end="", flush=True)
+            self.frame_count = 0
+            self.last_fps_time = current_time
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

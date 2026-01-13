@@ -1,86 +1,83 @@
 import math
+import os
+import random
 import time
+from typing import cast
+
+# Set MAVLink dialect before importing mavutil
+os.environ["MAVLINK20"] = "1"
+os.environ["MAVLINK_DIALECT"] = "common"
 
 import warp as wp
 from pymavlink import mavutil
+from pymavlink.dialects.v20 import common as mavlink2
 
 import newton
 import newton.examples
+from newton.viewer import (ViewerFile, ViewerGL, ViewerNull, ViewerRerun,
+                           ViewerUSD)
 
 
 class MAVLinkInterface:
-    """Handles MAVLink communication with PX4 SITL."""
+    """Handles MAVLink communication with a PX4 SITL instance."""
 
-    def __init__(
-        self,
-        connection_string: str = "tcpin:0.0.0.0:4560",
-        system_id: int = 245,
-        component_id: int = getattr(
-            mavutil.mavlink,
-            "MAV_COMP_ID_SIMULATOR",
-            mavutil.mavlink.MAV_COMP_ID_SYSTEM_CONTROL,  # fallback for older dialects
-        ),
-    ):
-        """
-        Initialize MAVLink connection.
+    _hil_act_msg = mavutil.mavlink.MAVLink_hil_actuator_controls_message
+    NUM_ACTUATOR_CHANNELS = _hil_act_msg.array_lengths[
+        _hil_act_msg.ordered_fieldnames.index("controls")
+    ]
 
-        Args:
-            connection_string: MAVLink connection string.
-                For PX4 SITL lockstep, use "tcpin:0.0.0.0:4560" to accept
-                connection from PX4 (bidirectional TCP).
-        """
-        print(
-            f"Waiting for PX4 connection on {connection_string} "
-            f"(sysid={system_id}, compid={component_id})..."
+    def __init__(self, ip: str = "0.0.0.0", sysid: int = 1, compid: int = 200):
+        conn_string = f"tcpin:{ip}:4560"
+        print(f"Waiting for PX4 connection on {conn_string}...")
+        self.mav = cast(
+            mavutil.mavtcpin,
+            mavutil.mavlink_connection(
+                conn_string,
+                source_system=sysid,
+                source_component=compid,
+            ),
         )
-        self.mav = mavutil.mavlink_connection(
-            connection_string,
-            # Use a simulator/system id distinct from PX4 (default sysid 1) to avoid
-            # PX4 treating our traffic as if it originated from itself, which causes
-            # "Ignore command 512 from 1/1 to 0/0" spam.
-            source_system=system_id,
-            source_component=component_id,
-        )
-        # Explicitly set our src ids on the wire and the PX4 targets. Some pymavlink
-        # transports ignore the constructor args when the connection is inbound.
-        self.mav.mav.srcSystem = system_id
-        self.mav.mav.srcComponent = component_id
+        self.proto: mavlink2.MAVLink = self.mav.mav
+        self.proto.srcSystem = sysid
+        self.proto.srcComponent = compid
         self.mav.target_system = 1
         self.mav.target_component = mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
 
         print(
-            f"Using MAVLink ids src={self.mav.mav.srcSystem}/{self.mav.mav.srcComponent} "
-            f"target={self.mav.target_system}/{self.mav.target_component}"
+            f"Using MAVLink source sysid/compid {self.proto.srcSystem}/{self.proto.srcComponent} "
+            f"and target sysid/compid {self.mav.target_system}/{self.mav.target_component}"
         )
 
-        self.actuator_controls = [0.0] * 16
-        self.armed = False
-        self.last_heartbeat_time = time.time()
-        self.heartbeat_interval = 1.0
+        self.actuator_controls = [0.0] * self.NUM_ACTUATOR_CHANNELS
+        print(len(self.actuator_controls))
+        self.last_hb_time = time.time()
+        self.hb_interval = 1.0
 
-        print(f"MAVLink interface initialized: {connection_string}")
+        # Sensor update timing
+        self.sensor_update_interval = 1.0 / 250.0  # 250 Hz IMU updates
+        self.gps_update_interval = 0.1  # 10 Hz GPS updates
+        self.last_sensor_time = 0.0
+        self.last_gps_time = 0.0
 
     def send_heartbeat(self):
-        """Send heartbeat to PX4."""
-        current_time = time.time()
-        if current_time - self.last_heartbeat_time >= self.heartbeat_interval:
-            self.mav.mav.heartbeat_send(
+        """
+        Send hearbeat (HEARBEAT) message to PX4.
+        """
+        now = time.time()
+        if now - self.last_hb_time >= self.hb_interval:
+            self.proto.heartbeat_send(
                 mavutil.mavlink.MAV_TYPE_QUADROTOR,
                 mavutil.mavlink.MAV_AUTOPILOT_GENERIC,
                 0,  # base_mode
                 0,  # custom_mode
                 mavutil.mavlink.MAV_STATE_ACTIVE,
             )
-            self.last_heartbeat_time = current_time
+            self.last_hb_time = now
 
-    def receive_actuator_commands(self):
+    def receive_actuator_controls(self):
         """
-        Receive actuator commands from PX4.
-
-        Returns:
-            List of actuator values (normalized 0-1 for motors).
+        Receive actuator controls (HIL_ACTUATOR_CONTROLS) message from PX4.
         """
-        # Non-blocking receive
         msg = self.mav.recv_match(blocking=False)
 
         while msg is not None:
@@ -88,15 +85,12 @@ class MAVLinkInterface:
 
             if msg_type == "HIL_ACTUATOR_CONTROLS":
                 self.actuator_controls = list(msg.controls)
-                self.armed = (msg.mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
 
             elif msg_type == "HEARTBEAT":
-                pass  # Track PX4 heartbeat
+                pass
 
-            # Check for more messages
+            # Purge other messages in receive buffer
             msg = self.mav.recv_match(blocking=False)
-
-        return self.actuator_controls
 
     def send_hil_sensor(
         self,
@@ -114,13 +108,14 @@ class MAVLinkInterface:
         diff_pressure: float = 0.0,
         pressure_alt: float = 0.0,
         temperature: float = 25.0,
-        fields_updated: int = 0x1FFF,  # All fields updated
+        fields_updated: int = 0x1FFF,  # all fields updated
+        id: int = 0,
     ):
         """
-        Send HIL_SENSOR message to PX4.
+        Send IMU sensor data (HIL_SENSOR) message to PX4.
 
         Args:
-            time_usec: Timestamp in microseconds
+            time_usec: Timestamp [us]
             xacc, yacc, zacc: Accelerometer readings [m/s^2]
             xgyro, ygyro, zgyro: Gyroscope readings [rad/s]
             xmag, ymag, zmag: Magnetometer readings [gauss]
@@ -129,8 +124,9 @@ class MAVLinkInterface:
             pressure_alt: Altitude from pressure [m]
             temperature: Temperature [degC]
             fields_updated: Bitmask of updated fields
+            id: IMU sensor instance (zero indexed)
         """
-        self.mav.mav.hil_sensor_send(
+        self.proto.hil_sensor_send(
             time_usec,
             xacc,
             yacc,
@@ -146,42 +142,47 @@ class MAVLinkInterface:
             pressure_alt,
             temperature,
             fields_updated,
-            0,  # id (sensor instance)
+            id=id,
         )
 
     def send_hil_gps(
         self,
         time_usec: int,
-        lat: int = 473977418,  # 47.3977418 degrees (Zurich)
-        lon: int = 85455939,  # 8.5455939 degrees
-        alt: int = 488000,  # 488m above MSL in mm
-        eph: int = 100,  # GPS HDOP
-        epv: int = 100,  # GPS VDOP
-        vel: int = 0,  # GPS ground speed [cm/s]
-        vn: int = 0,  # GPS velocity north [cm/s]
-        ve: int = 0,  # GPS velocity east [cm/s]
-        vd: int = 0,  # GPS velocity down [cm/s]
-        cog: int = 0,  # Course over ground [cdeg]
         fix_type: int = 3,  # 3D fix
+        lat: int = 473977418,  # 47.3977418 deg (Zurich)
+        lon: int = 85455939,  # 8.5455939 deg (Zurich)
+        alt: int = 488000,  # 488 m AMSL (Zurich)
+        eph: int = 100,  # 1.0 GPS HDOP
+        epv: int = 100,  # 1.0 GPS VDOP
+        vel: int = 0,  # stationary
+        vn: int = 0,  # stationary
+        ve: int = 0,  # stationary
+        vd: int = 0,  # stationary
+        cog: int = 65535,  # not available (UINT16_MAX)
         satellites_visible: int = 10,
+        id: int = 0,
+        yaw: int = 0,  # not available
     ):
         """
-        Send HIL_GPS message to PX4.
+        Send GPS sensor data (HIL_GPS) message to PX4.
 
         Args:
-            time_usec: Timestamp in microseconds
-            lat: Latitude [degE7]
-            lon: Longitude [degE7]
+            time_usec: Timestamp [us]
+            fix_type: GPS fix type (0: no fix, 2: 2D fix, 3: 3D fix)
+            lat: Latitude [deg] * 10^7
+            lon: Longitude [deg] * 10^7
             alt: Altitude MSL [mm]
-            eph: GPS HDOP [cm]
-            epv: GPS VDOP [cm]
+            eph: GPS HDOP [cm] * 10^2
+            epv: GPS VDOP [cm] * 10^2
             vel: GPS ground speed [cm/s]
-            vn, ve, vd: GPS velocity NED [cm/s]
-            cog: Course over ground [cdeg]
-            fix_type: GPS fix type (0=no fix, 3=3D fix)
-            satellites_visible: Number of satellites
+            vn, ve, vd: GPS NED velocity [cm/s]
+            cog: Course over ground (not heading, but direction of movement) [cdeg]
+            satellites_visible: Number of satellites visible
+            id: GPS sensor instance (zero indexed),
+            yaw: vehicle yaw relative to Earth's North [cdeg]
+
         """
-        self.mav.mav.hil_gps_send(
+        self.proto.hil_gps_send(
             time_usec,
             fix_type,
             lat,
@@ -195,12 +196,14 @@ class MAVLinkInterface:
             vd,
             cog,
             satellites_visible,
+            id=id,
+            yaw=yaw,
         )
 
     def send_hil_state_quaternion(
         self,
         time_usec: int,
-        attitude_quaternion: list = None,
+        attitude_quaternion: list = [1.0, 0.0, 0.0, 0.0],
         rollspeed: float = 0.0,
         pitchspeed: float = 0.0,
         yawspeed: float = 0.0,
@@ -229,10 +232,8 @@ class MAVLinkInterface:
             ind_airspeed, true_airspeed: Airspeed [cm/s]
             xacc, yacc, zacc: Acceleration [mG]
         """
-        if attitude_quaternion is None:
-            attitude_quaternion = [1.0, 0.0, 0.0, 0.0]  # Identity quaternion
 
-        self.mav.mav.hil_state_quaternion_send(
+        self.proto.hil_state_quaternion_send(
             time_usec,
             attitude_quaternion,
             rollspeed,
@@ -253,10 +254,15 @@ class MAVLinkInterface:
 
 
 class Drone:
-    def __init__(self, viewer, platform: str = "astro", use_px4: bool = False, args=None):
+    def __init__(
+        self,
+        viewer: ViewerGL | ViewerFile | ViewerNull | ViewerRerun | ViewerUSD,
+        platform: str = "astro",
+        px4: bool = True,
+    ):
         self.platform = platform
         self.viewer = viewer
-        self.use_px4 = use_px4
+        self.px4 = px4
 
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -264,17 +270,17 @@ class Drone:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # PX4 MAVLink interface
         self.mavlink = None
-        if self.use_px4:
+        if self.px4:
             self.mavlink = MAVLinkInterface()
-            self.sensor_update_interval = 1.0 / 250.0  # 250 Hz IMU updates
-            self.gps_update_interval = 0.1  # 10 Hz GPS updates
-            self.last_sensor_time = 0.0
-            self.last_gps_time = 0.0
 
         # Motor configuration for quadrotor (max thrust per motor in Newtons)
         self.max_motor_thrust = 25.0  # Adjust based on drone mass
+        # Torque coefficient: ratio of reaction torque to thrust (N·m per N)
+        self.motor_torque_coeff = 0.016
+        # Motor spin directions for yaw torque (1 = CCW, -1 = CW when viewed from above)
+        # Standard X-quad: alternating spin directions
+        self.motor_spin_dirs = [1, -1, 1, -1]
 
         # FPS tracking
         self.fps_update_interval = 0.5  # Update FPS display every 0.5 seconds
@@ -338,6 +344,10 @@ class Drone:
         boom_radius = self.body_boom_diam_m / 2
         diagonal_boom = body_diagonal_xy + boom_half_length - boom_radius
         diagonal_motor = diagonal_boom + boom_half_length
+
+        # Store motor geometry for torque calculations
+        self.motor_arm_length = diagonal_motor
+        self.motor_angles = [(2 * i + 1) * math.pi / 4 for i in range(4)]
 
         lnd_gear_rot_y = wp.quat_from_axis_angle(
             wp.vec3(0, 1, 0), -self.lnd_gear_angle_rad
@@ -434,35 +444,50 @@ class Drone:
     def capture(self):
         self.graph = None
         # Disable CUDA graph capture when using PX4 (dynamic MAVLink I/O is incompatible)
-        if wp.get_device().is_cuda and not self.use_px4:
+        if wp.get_device().is_cuda and not self.px4:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
     def simulate(self):
-        # Get actuator commands from PX4 if enabled
         if self.mavlink:
             self.mavlink.send_heartbeat()
-            actuator_controls = self.mavlink.receive_actuator_commands()
+            self.mavlink.receive_actuator_controls()
 
-            # Convert actuator commands to thrust force
+            # Convert actuator commands to thrust forces and torques
             # PX4 sends normalized values [0, 1] for motors
-            # Sum thrust from all 4 motors (channels 0-3)
             total_thrust = 0.0
-            for i in range(4):
-                motor_cmd = max(0.0, min(1.0, actuator_controls[i]))
-                total_thrust += motor_cmd * self.max_motor_thrust
+            torque_x = 0.0  # Roll
+            torque_y = 0.0  # Pitch
+            torque_z = 0.0  # Yaw
 
-            # Apply as vertical force (z-axis in body frame)
-            thrust_force = [0.0, 0.0, total_thrust, 0.0, 0.0, 0.0]
+            for i in range(4):
+                motor_cmd = max(0.0, min(1.0, self.mavlink.actuator_controls[i]))
+                thrust = motor_cmd * self.max_motor_thrust
+                total_thrust += thrust
+
+                # Motor position in body frame
+                motor_x = self.motor_arm_length * math.cos(self.motor_angles[i])
+                motor_y = self.motor_arm_length * math.sin(self.motor_angles[i])
+
+                # Torque from thrust at motor position: τ = r × F
+                # F = (0, 0, thrust), r = (motor_x, motor_y, 0)
+                torque_x += motor_y * thrust  # Roll: r_y * F_z
+                torque_y += -motor_x * thrust  # Pitch: -r_x * F_z
+
+                # Yaw torque from motor reaction (opposite to spin direction)
+                torque_z += -self.motor_spin_dirs[i] * self.motor_torque_coeff * thrust
+
+            # Apply forces and torques in body frame [fx, fy, fz, tx, ty, tz]
+            joint_f = [0.0, 0.0, total_thrust, torque_x, torque_y, torque_z]
         else:
             # Default hover thrust when not connected to PX4
-            thrust_force = [0.0, 0.0, 80.0, 0.0, 0.0, 0.0]
+            joint_f = [0.0, 0.0, 80.0, 0.0, 0.0, 0.0]
 
         for _ in range(self.sim_substeps):
             self.state0.clear_forces()
             self.viewer.apply_forces(self.state0)
-            self.control.joint_f.assign(thrust_force)
+            self.control.joint_f.assign(joint_f)
             self.contacts = self.model.collide(self.state0)
             self.solver.step(
                 self.state0, self.state1, self.control, self.contacts, self.sim_dt
@@ -475,6 +500,8 @@ class Drone:
 
     def _send_sensor_data(self):
         """Send simulated sensor data to PX4."""
+        if self.mavlink is None:
+            return
         time_usec = int(self.sim_time * 1e6)
 
         # Get current state from simulation
@@ -512,9 +539,10 @@ class Drone:
         zgyro = vel_angular[2]
 
         # Magnetometer (placeholder values for northern hemisphere)
-        xmag = 0.2
-        ymag = 0.0
-        zmag = 0.4
+        mag_noise_std = 0.005  # gauss
+        xmag = 0.2 + random.gauss(0, mag_noise_std)
+        ymag = 0.0 + random.gauss(0, mag_noise_std)
+        zmag = 0.4 + random.gauss(0, mag_noise_std)
 
         # Barometer
         # Approximate pressure from altitude (simplified model)
@@ -541,8 +569,8 @@ class Drone:
         )
 
         # Send GPS at lower rate (10 Hz)
-        if self.sim_time - self.last_gps_time >= self.gps_update_interval:
-            self.last_gps_time = self.sim_time
+        if self.sim_time - self.mavlink.last_gps_time >= self.mavlink.gps_update_interval:
+            self.mavlink.last_gps_time = self.sim_time
 
             # Convert simulation position to GPS coordinates
             # Using a reference point (Zurich) and adding local offsets
@@ -607,13 +635,13 @@ class Drone:
 
         # FPS tracking
         self.frame_count += 1
-        current_time = time.time()
-        elapsed = current_time - self.last_fps_time
+        now = time.time()
+        elapsed = now - self.last_fps_time
         if elapsed >= self.fps_update_interval:
             fps = self.frame_count / elapsed
             print(f"\rFPS: {fps:.1f}  ", end="", flush=True)
             self.frame_count = 0
-            self.last_fps_time = current_time
+            self.last_fps_time = now
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -634,7 +662,8 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable PX4 SITL communication via MAVLink.",
     )
+
     viewer, args = newton.examples.init(parser)
 
-    drone = Drone(viewer, args.platform, use_px4=args.px4)
+    drone = Drone(viewer, args.platform, args.px4)
     newton.examples.run(drone, args)

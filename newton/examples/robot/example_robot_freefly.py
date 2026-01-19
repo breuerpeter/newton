@@ -48,15 +48,14 @@ class MAVLinkInterface:
         )
 
         self.actuator_controls = [0.0] * self.NUM_ACTUATOR_CHANNELS
-        print(len(self.actuator_controls))
-        self.last_hb_time = time.time()
-        self.hb_interval = 1.0
 
-        # Sensor update timing
-        self.sensor_update_interval = 1.0 / 250.0  # 250 Hz IMU updates
-        self.gps_update_interval = 0.1  # 10 Hz GPS updates
-        self.last_sensor_time = 0.0
-        self.last_gps_time = 0.0
+        self.last_hb_time = 0.0
+        self.last_hil_sensor_time = 0.0
+        self.last_hil_gps_time = 0.0
+
+        self.hb_interval = 1.0 / 1.0  # [s]
+        self.hil_sensor_interval = 1.0 / 250.0  # [s]
+        self.hil_gps_interval = 1.0 / 10.0  # [s]
 
     def send_heartbeat(self):
         """
@@ -585,8 +584,11 @@ class Drone:
         )
 
         # Send GPS at lower rate (10 Hz)
-        if self.sim_time - self.mavlink.last_gps_time >= self.mavlink.gps_update_interval:
-            self.mavlink.last_gps_time = self.sim_time
+        if (
+            self.sim_time - self.mavlink.last_hil_gps_time
+            >= self.mavlink.hil_gps_interval
+        ):
+            self.mavlink.last_hil_gps_time = self.sim_time
 
             # Convert simulation position to GPS coordinates
             # Using a reference point (Zurich) and adding local offsets

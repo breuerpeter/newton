@@ -275,9 +275,9 @@ class Drone:
             self.mavlink = MAVLinkInterface()
 
         # Motor configuration for quadrotor (max thrust per motor in Newtons)
-        self.max_motor_thrust = 25.0  # Adjust based on drone mass
+        self.max_motor_thrust = 50.0  # Adjust based on drone mass
         # Torque coefficient: ratio of reaction torque to thrust (N·m per N)
-        self.motor_torque_coeff = 0.016
+        self.motor_torque_coeff = 0.05
         # Motor spin directions for yaw torque (1 = CCW, -1 = CW when viewed from above)
         # Standard X-quad: alternating spin directions
         self.motor_spin_dirs = [1, -1, 1, -1]

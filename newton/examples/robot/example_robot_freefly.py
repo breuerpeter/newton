@@ -417,8 +417,24 @@ class Drone:
                 cfg=newton.ModelBuilder.ShapeConfig(density=self.carbon_fiber_density),
             )
 
-        # TODO: propellers (no mass, for visualization only)
+            # add GPS antenna
+            # TODO: change to site
 
+            gps_ant_radius_m = 0.02
+            gps_ant_half_height_m = 0.05
+            gps_antenna_shift = wp.vec3(
+                self.body_hx_m - gps_ant_radius_m,
+                0.0,
+                self.body_hz_m + gps_ant_half_height_m,
+            )
+
+            builder.add_shape_cylinder(
+                body,
+                xform=wp.transform(gps_antenna_shift, wp.quat_identity()),
+                radius=gps_ant_radius_m,
+                half_height=gps_ant_half_height_m,
+                cfg=newton.ModelBuilder.ShapeConfig(density=0.0),
+            )
         builder.add_ground_plane()
 
         self.model = builder.finalize()

@@ -14,8 +14,7 @@ from pymavlink.dialects.v20 import common as mavlink2
 
 import newton
 import newton.examples
-from newton.viewer import (ViewerFile, ViewerGL, ViewerNull, ViewerRerun,
-                           ViewerUSD)
+from newton.viewer import ViewerFile, ViewerGL, ViewerNull, ViewerRerun, ViewerUSD
 
 
 class MAVLinkInterface:
@@ -61,7 +60,7 @@ class MAVLinkInterface:
 
     def send_heartbeat(self):
         """
-        Send hearbeat (HEARBEAT) message to PX4.
+        Send hearbeat (HEARTBEAT) message to PX4.
         """
         now = time.time()
         if now - self.last_hb_time >= self.hb_interval:
@@ -85,6 +84,7 @@ class MAVLinkInterface:
 
             if msg_type == "HIL_ACTUATOR_CONTROLS":
                 self.actuator_controls = list(msg.controls)
+                # print(self.actuator_controls)
 
             elif msg_type == "HEARTBEAT":
                 pass

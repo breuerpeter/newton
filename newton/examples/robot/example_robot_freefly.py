@@ -346,7 +346,7 @@ class Drone:
 
         # Store motor geometry for torque calculations
         self.motor_arm_length = diagonal_motor
-        self.motor_angles = [(2 * i + 1) * math.pi / 4 for i in range(4)]
+        self.motor_angles = [-(2 * i + 1) * math.pi / 4 for i in range(4)]
 
         lnd_gear_rot_y = wp.quat_from_axis_angle(
             wp.vec3(0, 1, 0), -self.lnd_gear_angle_rad

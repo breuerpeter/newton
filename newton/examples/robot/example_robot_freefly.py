@@ -524,6 +524,7 @@ class Drone:
         # body_qd contains linear and angular velocity for each body
         body_q = self.state0.body_q.numpy()
         body_qd = self.state0.body_qd.numpy()
+        body_qd_prev = self.state1.body_qd.numpy()
 
         # Extract drone state (body index 0)
         # Position: [x, y, z]
@@ -535,29 +536,76 @@ class Drone:
 
         # Velocity: [vx, vy, vz, wx, wy, wz] (linear, angular)
         vel_linear = body_qd[0, :3]
+        vel_linear_prev = body_qd_prev[0, :3]
         vel_angular = body_qd[0, 3:6]
+
+        # Acceleration: [x, y, z]
+        acc_linear = (vel_linear - vel_linear_prev) / self.sim_dt
 
         # Generic/placeholder sensor data
         # In a real implementation, these would be computed from simulation state
 
-        # IMU data (accelerometer includes gravity in body frame)
-        # For now, use placeholder values - gravity pointing down in world frame
-        # TODO: Transform gravity to body frame using quaternion
-        xacc = 0.0
-        yacc = 0.0
-        zacc = -9.81  # Gravity (placeholder, should be in body frame)
+        # IMU data (accelerometer measures specific force in body frame)
+        # Specific force = linear_acceleration - gravity (both in body frame)
+        # Transform world frame vectors to body frame using inverse quaternion rotation
+        quat = wp.quat(
+            float(quat_xyzw[0]),
+            float(quat_xyzw[1]),
+            float(quat_xyzw[2]),
+            float(quat_xyzw[3]),
+        )
+
+        # Gravity in world frame (pointing down)
+        gravity_world = wp.vec3(0.0, 0.0, -9.81)
+        # Transform gravity to body frame
+        gravity_body = wp.quat_rotate_inv(quat, gravity_world)
+
+        # Linear acceleration in world frame, transform to body frame
+        acc_world = wp.vec3(
+            float(acc_linear[0]), float(acc_linear[1]), float(acc_linear[2])
+        )
+        acc_body = wp.quat_rotate_inv(quat, acc_world)
+
+        # Accelerometer reading = specific force = acceleration - gravity
+        # Convert from Newton FLU (Forward-Left-Up) to PX4 FRD (Forward-Right-Down)
+        # 180° rotation about X axis: x_frd = x_flu, y_frd = -y_flu, z_frd = -z_flu
+        xacc = acc_body[0] - gravity_body[0]
+        yacc = -(acc_body[1] - gravity_body[1])
+        zacc = -(acc_body[2] - gravity_body[2])
 
         # Gyroscope (angular velocity in body frame)
-        # TODO: Transform to body frame
-        xgyro = vel_angular[0]
-        ygyro = vel_angular[1]
-        zgyro = vel_angular[2]
+        vel_angular_body = wp.quat_rotate_inv(quat, wp.vec3(vel_angular))
+        # Convert from FLU to FRD
+        xgyro = vel_angular_body[0]
+        ygyro = -vel_angular_body[1]
+        zgyro = -vel_angular_body[2]
 
-        # Magnetometer (placeholder values for northern hemisphere)
-        mag_noise_std = 0.005  # gauss
-        xmag = 0.2 + random.gauss(0, mag_noise_std)
-        ymag = 0.0 + random.gauss(0, mag_noise_std)
-        zmag = 0.4 + random.gauss(0, mag_noise_std)
+        # Magnetometer - World Magnetic Model for Zurich (lat: 47.4°, lon: 8.5°)
+        # Hardcoded WMM values for Zurich
+        declination_rad = math.radians(3.0)  # ~3° East (magnetic north vs true north)
+        inclination_rad = math.radians(64.0)  # ~64° dip angle (field points into earth)
+        field_strength_gauss = 0.48
+
+        # Construct magnetic field in NED frame
+        # mag_ned = Dcm(Euler(0, -inclination, declination)) * [H, 0, 0]
+        mag_n = (
+            field_strength_gauss * math.cos(declination_rad) * math.cos(inclination_rad)
+        )
+        mag_e = field_strength_gauss * math.sin(declination_rad)
+        mag_d = (
+            field_strength_gauss * math.cos(declination_rad) * math.sin(inclination_rad)
+        )
+
+        # Convert NED to Newton world frame (X=North, Y=East, Z=Up)
+        mag_world = wp.vec3(mag_n, mag_e, -mag_d)
+
+        # Rotate to body frame (FLU)
+        mag_body = wp.quat_rotate_inv(quat, mag_world)
+
+        # Convert from FLU to FRD and add noise
+        xmag = mag_body[0] + random.gauss(0, 0.02)
+        ymag = -mag_body[1] + random.gauss(0, 0.02)
+        zmag = -mag_body[2] + random.gauss(0, 0.03)
 
         # Barometer
         # Approximate pressure from altitude (simplified model)
@@ -607,9 +655,8 @@ class Drone:
             alt = int((ref_alt + altitude) * 1000)  # mm
 
             # Velocity in cm/s (NED frame)
-            # TODO: Proper frame transformation
             vn = int(vel_linear[0] * 100)
-            ve = int(vel_linear[1] * 100)
+            ve = int(-vel_linear[1] * 100)  # y_frd (px4)= -y_flu(newton)
             vd = int(-vel_linear[2] * 100)  # Down is negative z
 
             vel = int(math.sqrt(vel_linear[0] ** 2 + vel_linear[1] ** 2) * 100)
@@ -629,9 +676,9 @@ class Drone:
             self.mavlink.send_hil_state_quaternion(
                 time_usec=time_usec,
                 attitude_quaternion=quat_wxyz,
-                rollspeed=vel_angular[0],
-                pitchspeed=vel_angular[1],
-                yawspeed=vel_angular[2],
+                rollspeed=xgyro,
+                pitchspeed=ygyro,
+                yawspeed=zgyro,
                 lat=lat,
                 lon=lon,
                 alt=alt,

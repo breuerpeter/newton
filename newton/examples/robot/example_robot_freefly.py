@@ -493,16 +493,36 @@ class Drone:
                 # Yaw torque from motor reaction (opposite to spin direction)
                 torque_z += -self.motor_spin_dirs[i] * self.motor_torque_coeff * thrust
 
-            # Apply forces and torques in body frame [fx, fy, fz, tx, ty, tz]
-            joint_f = [0.0, 0.0, total_thrust, torque_x, torque_y, torque_z]
+                # Extract body rotation quaternion (XYZW format from body_q transform)
+                body_rot = wp.quat(self.state0.body_q.numpy()[0, 3:7])
+
+                # Forces in body frame [fx, fy, fz, tx, ty, tz]
+                joint_f_b = [0.0, 0.0, total_thrust, torque_x, torque_y, torque_z]
+
+                # Rotate linear force from body to world frame
+                force_world = wp.quat_rotate(body_rot, wp.vec3(joint_f_b[:3]))
+
+                # Rotate angular torque from body to world frame
+                torque_world = wp.quat_rotate(body_rot, wp.vec3(joint_f_b[3:]))
+
+                # Combine into world-frame joint forces array
+                joint_f_world = [
+                    force_world[0],
+                    force_world[1],
+                    force_world[2],
+                    torque_world[0],
+                    torque_world[1],
+                    torque_world[2],
+                ]
+
         else:
             # Default hover thrust when not connected to PX4
-            joint_f = [0.0, 0.0, 80.0, 0.0, 0.0, 0.0]
+            joint_f_world = [0.0, 0.0, 80.0, 0.0, 0.0, 0.0]
 
         for _ in range(self.sim_substeps):
             self.state0.clear_forces()
             self.viewer.apply_forces(self.state0)
-            self.control.joint_f.assign(joint_f)
+            self.control.joint_f.assign(joint_f_world)
             self.contacts = self.model.collide(self.state0)
             self.solver.step(
                 self.state0, self.state1, self.control, self.contacts, self.sim_dt

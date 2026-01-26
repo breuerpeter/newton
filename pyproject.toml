@@ -62,8 +62,8 @@ examples = [
     "pyyaml>=6.0.2",
 ]
 
-# Freefly example dependencies
-freefly = [
+# PX4 dependencies
+px4 = [
     "newton[sim]",          # include simulation dependencies
     "newton[importers]",    # include import dependencies
     "pyglet>=2.1.6",        # for OpenGL viewer

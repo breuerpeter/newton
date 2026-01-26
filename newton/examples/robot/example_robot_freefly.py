@@ -319,8 +319,12 @@ class Drone:
             self.motor_height_m *= 2
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4  # Contact stiffness
+        builder.default_shape_cfg.kd = 1000.0  # Contact damping
+        builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+        builder.rigid_contact_margin = 0.01  # Contact margin
 
-        init_pos_body = wp.vec3(0.0, 0.0, 3.0)
+        init_pos_body = wp.vec3(0.0, 0.0, 1.0)
         init_att_body = wp.quat_identity()
         init_tf_body = wp.transform(init_pos_body, init_att_body)
 

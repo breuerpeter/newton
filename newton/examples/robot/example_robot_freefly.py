@@ -715,12 +715,15 @@ class Drone:
             )
 
     def step(self):
+        # Increment sim_time BEFORE simulate() so sensor data has non-zero timestamps
+        self.sim_time += self.frame_dt
+
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
 
-        self.sim_time += self.frame_dt
+        # Check if PX4 disconnected and exit if so
 
         # FPS tracking
         self.frame_count += 1

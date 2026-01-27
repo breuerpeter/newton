@@ -593,16 +593,16 @@ class Drone:
         # Accelerometer reading = specific force = acceleration - gravity
         # Convert from Newton FLU (Forward-Left-Up) to PX4 FRD (Forward-Right-Down)
         # 180° rotation about X axis: x_frd = x_flu, y_frd = -y_flu, z_frd = -z_flu
-        xacc = acc_body[0] - gravity_body[0]
-        yacc = -(acc_body[1] - gravity_body[1])
-        zacc = -(acc_body[2] - gravity_body[2])
+        xacc = acc_body[0] - gravity_body[0] + random.gauss(0, 0.02)
+        yacc = -(acc_body[1] - gravity_body[1]) + random.gauss(0, 0.02)
+        zacc = -(acc_body[2] - gravity_body[2]) + random.gauss(0, 0.02)
 
         # Gyroscope (angular velocity in body frame)
         vel_angular_body = wp.quat_rotate_inv(quat, wp.vec3(vel_angular))
         # Convert from FLU to FRD
-        xgyro = vel_angular_body[0]
-        ygyro = -vel_angular_body[1]
-        zgyro = -vel_angular_body[2]
+        xgyro = vel_angular_body[0] + random.gauss(0, 0.02)
+        ygyro = -vel_angular_body[1] + random.gauss(0, 0.02)
+        zgyro = -vel_angular_body[2] + random.gauss(0, 0.02)
 
         # Magnetometer - World Magnetic Model for Zurich (lat: 47.4°, lon: 8.5°)
         # Hardcoded WMM values for Zurich
